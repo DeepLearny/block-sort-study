@@ -33,7 +33,14 @@ const AppContent: React.FC = () => {
   const [inZenMode, setInZenMode] = useGameStorage("inZenMode", false);
   const [levelNr, setLevelNr] = useGameStorage("levelNr", 0);
   const [inLevel, setInLevel] = useGameStorage("inLevel", false);
-  const { locked, setProgress, loadedProgress } = useStudy();
+  const {
+    locked,
+    setProgress,
+    loadedProgress,
+    progressHydrated,
+    userKey,
+    hydratedUserKey
+  } = useStudy();
 
   const canInstall: boolean = "standalone" in window.navigator;
   const isInstalled: boolean =
@@ -45,8 +52,19 @@ const AppContent: React.FC = () => {
   }, [soundEnabled]);
 
   useEffect(() => {
+    if (!(progressHydrated && userKey && hydratedUserKey === userKey)) {
+      return;
+    }
     setProgress({ levelNr, inLevel, inZenMode });
-  }, [setProgress, levelNr, inLevel, inZenMode]);
+  }, [
+    setProgress,
+    levelNr,
+    inLevel,
+    inZenMode,
+    progressHydrated,
+    userKey,
+    hydratedUserKey
+  ]);
 
   useEffect(() => {
     if (!loadedProgress) {

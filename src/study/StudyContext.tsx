@@ -8,17 +8,26 @@ import {
   useState
 } from "react";
 
+import {
+  getAllGameValues,
+  setGameValue,
+  setGameValues
+} from "@/support/useGameStorage";
+
 import appInfo from "../../package.json";
 
+import {
+  type LegacyProgressState,
+  normalizeProgressSnapshot,
+  restoreGameSnapshot,
+  serializeGameSnapshot,
+  type StudyGameSnapshotV2
+} from "./progressSnapshot";
 import { type LoggerStatus, ServerSync } from "./ServerSync";
 import { loadStoredUser, persistUser } from "./user";
 import { useStudyTimer } from "./useStudyTimer";
 
-type ProgressState = {
-  levelNr: number;
-  inLevel: boolean;
-  inZenMode: boolean;
-};
+type ProgressState = LegacyProgressState;
 
 type StudyContextType = {
   locked: boolean;
@@ -33,6 +42,9 @@ type StudyContextType = {
   trackEvent: (eventType: string, payload?: Record<string, unknown>) => void;
   setProgress: (progress: ProgressState) => void;
   loadedProgress: ProgressState | null;
+  progressHydrating: boolean;
+  progressHydrated: boolean;
+  hydratedUserKey: string | null;
 };
 
 const appVersion = appInfo.version;
@@ -70,9 +82,14 @@ export const StudyProvider: React.FC<React.PropsWithChildren> = ({
     inLevel: false,
     inZenMode: false
   });
+  const revisionRef = useRef(0);
+  const latestSnapshotRef = useRef<StudyGameSnapshotV2 | null>(null);
   const [loadedProgress, setLoadedProgress] = useState<ProgressState | null>(
     null
   );
+  const [progressHydrating, setProgressHydrating] = useState(false);
+  const [progressHydrated, setProgressHydrated] = useState(false);
+  const [hydratedUserKey, setHydratedUserKey] = useState<string | null>(null);
 
   const [loggerStatus, setLoggerStatus] = useState<LoggerStatus>(defaultLogger);
   const timer = useStudyTimer();
@@ -222,6 +239,35 @@ export const StudyProvider: React.FC<React.PropsWithChildren> = ({
     [serverSync, sessionId, trackEvent, userKey]
   );
 
+  const hydrateProgressForUser = useCallback(
+    async (forUserKey: string) => {
+      setProgressHydrating(true);
+      setProgressHydrated(false);
+      setHydratedUserKey(null);
+      setLoadedProgress(null);
+      latestSnapshotRef.current = null;
+      try {
+        const data = await serverSync.loadProgress();
+        if (!data.progress) {
+          return null;
+        }
+        const normalized = normalizeProgressSnapshot(data.progress);
+        progressRef.current = normalized.coarse;
+        setLoadedProgress(normalized.coarse);
+        if (normalized.snapshot) {
+          latestSnapshotRef.current = normalized.snapshot;
+          revisionRef.current = normalized.snapshot.revision;
+        }
+        return normalized.snapshot;
+      } finally {
+        setHydratedUserKey(forUserKey);
+        setProgressHydrated(true);
+        setProgressHydrating(false);
+      }
+    },
+    [serverSync]
+  );
+
   const unlockWithStudy = useCallback(
     async (nextUsername: string, studyEntry: string) => {
       const trimmedName = nextUsername.trim();
@@ -236,6 +282,20 @@ export const StudyProvider: React.FC<React.PropsWithChildren> = ({
       const normalizedKey = persistUser(trimmedName);
       setUsername(trimmedName);
       setUserKey(normalizedKey);
+
+      const snapshot = await hydrateProgressForUser(normalizedKey);
+      if (snapshot) {
+        const restored = restoreGameSnapshot(snapshot);
+        await setGameValues(restored.gameState);
+        await Promise.all([
+          setGameValue("levelNr", restored.coarse.levelNr),
+          setGameValue("inLevel", restored.coarse.inLevel),
+          setGameValue("inZenMode", restored.coarse.inZenMode)
+        ]);
+        progressRef.current = restored.coarse;
+        setLoadedProgress(restored.coarse);
+      }
+
       const assignedSeconds = 60 + Math.floor(Math.random() * 121);
       timer.startTimer(assignedSeconds);
       setSessionActive(true);
@@ -243,7 +303,7 @@ export const StudyProvider: React.FC<React.PropsWithChildren> = ({
       await startSession(trimmedStudyEntry, trimmedName);
       return true;
     },
-    [startSession, timer]
+    [hydrateProgressForUser, startSession, timer]
   );
 
   useEffect(() => {
@@ -303,29 +363,67 @@ export const StudyProvider: React.FC<React.PropsWithChildren> = ({
         ...createEventPayload("session_end", { result: "unload" }),
         session_id: sessionId
       });
+
+      if (
+        userKey &&
+        progressHydrated &&
+        hydratedUserKey === userKey &&
+        latestSnapshotRef.current
+      ) {
+        serverSync.sendBeaconProgress(latestSnapshotRef.current);
+      }
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
-  }, [createEventPayload, serverSync, sessionId, userKey]);
+  }, [
+    createEventPayload,
+    hydratedUserKey,
+    progressHydrated,
+    serverSync,
+    sessionId,
+    userKey
+  ]);
 
   useEffect(() => {
-    void serverSync
-      .loadProgress()
-      .then((data) => {
-        if (data.progress) {
-          progressRef.current = data.progress;
-          setLoadedProgress(data.progress);
-        }
-      })
-      .catch(() => undefined);
-  }, [serverSync]);
+    const onVisibility = () => {
+      if (document.visibilityState !== "hidden") {
+        return;
+      }
+      if (!latestSnapshotRef.current) {
+        return;
+      }
+      if (!(userKey && progressHydrated && hydratedUserKey === userKey)) {
+        return;
+      }
+      serverSync.sendBeaconProgress(latestSnapshotRef.current);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [hydratedUserKey, progressHydrated, serverSync, userKey]);
 
   const setProgress = useCallback(
     (progress: ProgressState) => {
       progressRef.current = progress;
-      void serverSync.saveProgress(progress).catch(() => undefined);
+
+      void getAllGameValues().then((allGameState) => {
+        const nextRevision = revisionRef.current + 1;
+        const snapshot = serializeGameSnapshot(
+          progress,
+          allGameState,
+          nextRevision,
+          new Date()
+        );
+        revisionRef.current = nextRevision;
+        latestSnapshotRef.current = snapshot;
+
+        if (!(userKey && progressHydrated && hydratedUserKey === userKey)) {
+          return;
+        }
+
+        void serverSync.saveProgress(snapshot).catch(() => undefined);
+      });
     },
-    [serverSync]
+    [hydratedUserKey, progressHydrated, serverSync, userKey]
   );
 
   return (
@@ -342,7 +440,10 @@ export const StudyProvider: React.FC<React.PropsWithChildren> = ({
         unlockWithStudy,
         trackEvent,
         setProgress,
-        loadedProgress
+        loadedProgress,
+        progressHydrating,
+        progressHydrated,
+        hydratedUserKey
       }}
     >
       {children}

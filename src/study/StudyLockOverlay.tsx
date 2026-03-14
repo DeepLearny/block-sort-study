@@ -3,7 +3,13 @@ import { useState } from "react";
 import { useStudy } from "./StudyContext";
 
 export const StudyLockOverlay: React.FC = () => {
-  const { username, unlockWithStudy, cooldownSeconds, canUnlock } = useStudy();
+  const {
+    username,
+    unlockWithStudy,
+    cooldownSeconds,
+    canUnlock,
+    progressHydrating
+  } = useStudy();
   const [nameInput, setNameInput] = useState(username);
   const [studyInput, setStudyInput] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -62,12 +68,17 @@ export const StudyLockOverlay: React.FC = () => {
             Cooldown active: {cooldownSeconds}s remaining before unlock.
           </p>
         )}
+        {progressHydrating && (
+          <p className="text-sm text-blue-300">Loading saved progress…</p>
+        )}
         <button
           type="submit"
-          disabled={!canUnlock}
+          disabled={!canUnlock || progressHydrating}
           className="w-full rounded bg-emerald-500 p-2 font-bold disabled:opacity-40"
         >
-          Unlock play session
+          {progressHydrating
+            ? "Loading saved progress…"
+            : "Unlock play session"}
         </button>
       </form>
     </div>
