@@ -1,3 +1,5 @@
+import type { StudyProgressSnapshot } from "./progressSnapshot";
+
 export type LoggerStatus = {
   enabled: boolean;
   format: "jsonl";
@@ -9,12 +11,6 @@ export type LoggerStatus = {
 
 type UserIdentity = {
   userKey: string | null;
-};
-
-type ProgressPayload = {
-  levelNr: number;
-  inLevel: boolean;
-  inZenMode: boolean;
 };
 
 type StudyEventPayload = Record<string, unknown> & {
@@ -126,10 +122,10 @@ export class ServerSync {
       { method: "GET" },
       false
     );
-    return (await response.json()) as { progress?: ProgressPayload };
+    return (await response.json()) as { progress?: StudyProgressSnapshot };
   }
 
-  async saveProgress(progress: ProgressPayload) {
+  async saveProgress(progress: StudyProgressSnapshot) {
     try {
       await this.retryFetch("/save-progress", {
         method: "POST",
@@ -179,6 +175,18 @@ export class ServerSync {
     return navigator.sendBeacon(
       url,
       new Blob([JSON.stringify(payload)], headers)
+    );
+  }
+
+  sendBeaconProgress(progress: StudyProgressSnapshot) {
+    const url = `${this.apiBase}/save-progress`;
+    const headers = { type: "application/json" };
+    if (!("sendBeacon" in navigator)) {
+      return false;
+    }
+    return navigator.sendBeacon(
+      url,
+      new Blob([JSON.stringify({ progress })], headers)
     );
   }
 }

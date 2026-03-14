@@ -117,4 +117,90 @@ describe("StudyContext", () => {
       duration_seconds: 60
     });
   });
+
+  it("does not sync progress before hydration is complete", async () => {
+    const { result } = renderHook(() => useStudy(), { wrapper });
+
+    await act(async () => {
+      result.current.setProgress({
+        levelNr: 3,
+        inLevel: true,
+        inZenMode: false
+      });
+    });
+
+    const saveCallsBeforeUnlock = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/save-progress")
+    );
+    expect(saveCallsBeforeUnlock).toHaveLength(0);
+  });
+
+  it("hydrates remote progress before session_start payload", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          progress: {
+            version: 2,
+            savedAt: new Date().toISOString(),
+            revision: 2,
+            levelNr: 9,
+            inLevel: true,
+            inZenMode: false,
+            activeState: {
+              levelStage: 0,
+              levelType: null,
+              zenLevelStage: 0,
+              zenLevelType: null,
+              zenLevelNr: 0,
+              zenDifficulty: 0,
+              zenLevelTypeIndex: 0,
+              moveCount: 0,
+              previousMoveCount: 0,
+              revealedCount: 0
+            },
+            seeds: {
+              currentLevelSeed: null,
+              currentZenLevelSeed: null
+            },
+            gameState: {}
+          }
+        })
+      })
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({})
+      });
+
+    const { result } = renderHook(() => useStudy(), { wrapper });
+
+    await act(async () => {
+      await result.current.unlockWithStudy("Student B", "Read docs");
+    });
+
+    const sessionStartPayload = fetchMock.mock.calls
+      .map((call) => {
+        const [url, init] = call;
+        return {
+          url: String(url),
+          body: init?.body ? JSON.parse(String(init.body)) : null
+        };
+      })
+      .find(
+        (call) =>
+          call.url.endsWith("/log-session") &&
+          call.body?.event_type === "session_start"
+      )?.body;
+
+    expect(sessionStartPayload).toMatchObject({
+      session_start_level: 9,
+      session_start_in_level: true,
+      current_level: 9,
+      current_in_level: true
+    });
+  });
 });

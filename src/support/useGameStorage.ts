@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import localForage from "localforage";
 
 import type { LevelState } from "@/game/types";
 import {
@@ -12,6 +13,11 @@ import { migrateLevelState } from "./migrateLevelState";
 
 const GAME_STORE = "block-sort-store";
 
+const gameStore = localForage.createInstance({
+  driver: [localForage.INDEXEDDB, localForage.LOCALSTORAGE],
+  name: GAME_STORE
+});
+
 export const useGameStorage = <T>(key: string, initialValue: T | (() => T)) =>
   useOfflineStorage<T>(key, initialValue, GAME_STORE);
 
@@ -23,6 +29,20 @@ export const setGameValue = <T>(key: string, value: T) =>
 
 export const deleteGameValue = (key: string) =>
   deleteOfflineValue(key, GAME_STORE);
+
+export const getAllGameValues = async (): Promise<Record<string, unknown>> => {
+  const values: Record<string, unknown> = {};
+  await gameStore.iterate<unknown, void>((value, key) => {
+    values[key] = value;
+  });
+  return values;
+};
+
+export const setGameValues = async (values: Record<string, unknown>) => {
+  await Promise.all(
+    Object.entries(values).map(([key, value]) => gameStore.setItem(key, value))
+  );
+};
 
 export const useLevelStateStorage = (
   key: string,
